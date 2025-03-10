@@ -9,6 +9,31 @@ router.post(
   CaloriLogHandlers.createCaloriLog
 );
 
+router.post("/apple", CaloriLogHandlers.createApple);
+
+router.post("/chicken", CaloriLogHandlers.createChicken);
+
+router.post(
+  "/cabbage",
+
+  CaloriLogHandlers.createCabbage
+);
+router.post(
+  "/orange",
+
+  CaloriLogHandlers.createOrange
+);
+router.post(
+  "/banana",
+
+  CaloriLogHandlers.createBanana
+);
+router.post(
+  "/coffee",
+
+  CaloriLogHandlers.createCoffee
+);
+
 // Get all CaloriLogs
 router.get("/", CaloriLogHandlers.getAllCaloriLogs);
 

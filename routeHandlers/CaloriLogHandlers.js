@@ -101,23 +101,28 @@ class EdgeImpulseClassifier {
       // Load and preprocess the image
       let image = await sharp(imagePath)
         .resize({ width: 96, height: 96 }) // Resize to 96x96 pixels (match Edge Impulse input)
-        .greyscale() // Convert to grayscale if needed
-        .normalize() // Normalize pixel values
+        /* .greyscale() // Convert to grayscale if needed */
+        /* .normalize()  */ // Normalize pixel values
+        /* .toColorspace("rgb") */
         .raw()
         .toBuffer();
 
+      let rawData = Array.from(new Uint8Array(image)).map((v) => v / 255.0);
+
+      return new Uint8Array(image);
       return Array.from(new Uint8Array(image)); // Convert to array of numbers
+      /* return rawData;  */ // Convert to array of numbers
     } catch (error) {
       throw new Error("Failed to process image: " + error.message);
     }
   }
 
   _arrayToHeap(data) {
-    let typedArray = new Float32Array(data);
+    let typedArray = new Int8Array(data);
     let numBytes = typedArray.length * typedArray.BYTES_PER_ELEMENT;
     let ptr = Module._malloc(numBytes);
-    let heapBytes = new Uint8Array(Module.HEAPU8.buffer, ptr, numBytes);
-    heapBytes.set(new Uint8Array(typedArray.buffer));
+    let heapBytes = new Int8Array(Module.HEAPU8.buffer, ptr, numBytes);
+    heapBytes.set(typedArray);
     return { ptr: ptr, buffer: heapBytes };
   }
 }
@@ -144,6 +149,92 @@ const getFoodName = async (imagePath) => {
   }
 };
 
+const fetchFoodData = async (foodName) => {
+  const token = await getOAuthToken();
+
+  // Step 1: Search for the food
+  let searchResponse;
+  try {
+    searchResponse = await axios.get(
+      "https://platform.fatsecret.com/rest/server.api",
+      {
+        params: {
+          method: "foods.search",
+          search_expression: foodName,
+          format: "json",
+        },
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      }
+    );
+  } catch (err) {
+    console.error("API Request Error:", err);
+    throw new Error("API request failed");
+  }
+
+  const foods = searchResponse.data.foods?.food;
+  if (!foods || foods.length === 0) {
+    throw new Error("Food not found");
+  }
+
+  const foodId = foods[0].food_id;
+
+  // Step 2: Get detailed food information
+  const detailResponse = await axios.get(
+    `https://platform.fatsecret.com/rest/server.api`,
+    {
+      params: {
+        method: "food.get.v2",
+        food_id: foodId,
+        format: "json",
+      },
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    }
+  );
+
+  const foodDetails = detailResponse.data.food;
+  const firstServing = foodDetails.servings.serving[0];
+
+  if (!firstServing) {
+    throw new Error("No serving information found");
+  }
+
+  // Step 3: Extract required nutritional data
+  const caloriLogData = {
+    foodName: foodDetails.food_name,
+    calories: Number(firstServing.calories) || 0,
+    macronutrients: {
+      protein: Number(firstServing.protein) || 0,
+      carbohydrates: Number(firstServing.carbohydrate) || 0,
+      fats: Number(firstServing.fat) || 0,
+      fiber: Number(firstServing.fiber) || 0,
+      sugar: Number(firstServing.sugar) || 0,
+      sodium: Number(firstServing.sodium) || 0,
+      cholesterol: Number(firstServing.cholesterol) || 0,
+    },
+    vitamins: {
+      vitaminA: Number(firstServing.vitamin_a) || 0,
+      vitaminB: 0, // Not provided
+      vitaminC: Number(firstServing.vitamin_c) || 0,
+      vitaminD: 0, // Not provided
+      vitaminE: 0, // Not provided
+      vitaminK: 0, // Not provided
+    },
+    minerals: {
+      calcium: Number(firstServing.calcium) || 0,
+      iron: Number(firstServing.iron) || 0,
+      magnesium: 0, // Not provided
+      potassium: Number(firstServing.potassium) || 0,
+      zinc: 0, // Not provided
+    },
+  };
+
+  return caloriLogData;
+};
+
 // Create a new CaloriLog
 exports.createCaloriLog = async (req, res) => {
   try {
@@ -152,109 +243,117 @@ exports.createCaloriLog = async (req, res) => {
     }
 
     const foodName = await getFoodName(req.file.path);
-
     if (!foodName) {
       return res.status(400).json({ message: "Food name is required" });
     }
 
-    const token = await getOAuthToken();
+    // Fetch the food data using the common function
+    const caloriLogData = await fetchFoodData(foodName);
 
-    // Step 1: Search for the food
-    let searchResponse;
-    try {
-      console.log("eddie");
-      searchResponse = await axios.get(
-        "https://platform.fatsecret.com/rest/server.api",
-        {
-          params: {
-            method: "foods.search",
-            search_expression: foodName,
-            format: "json",
-          },
-          headers: {
-            Authorization: `Bearer ${token}`,
-          },
-        }
-      );
-    } catch (err) {
-      console.error("API Request Error:", err); // Log error for debugging
+    // Step 4: Save to MongoDB
+    const newCaloriLog = new CaloriLog(caloriLogData);
+    const savedCaloriLog = await newCaloriLog.save();
 
-      if (err.response) {
-        // The request was made, but the server responded with an error status
-        return res.status(err.response.status).json({
-          message: err.response.data?.message || "API request failed",
-          status: err.response.status,
-        });
-      } else if (err.request) {
-        // The request was made, but no response was received
-        return res
-          .status(500)
-          .json({ message: "No response received from API" });
-      } else {
-        // Something else went wrong
-        return res.status(500).json({ message: "Unexpected error occurred" });
-      }
-    }
+    // Step 5: Send response
+    res.status(201).json(savedCaloriLog);
+  } catch (error) {
+    res.status(500).json({ message: "Server error", error });
+  }
+};
 
-    const foods = searchResponse.data.foods?.food;
+exports.createApple = async (req, res) => {
+  try {
+    const foodName = "Apple"; // Static for apple, can change as needed
 
-    if (!foods || foods.length === 0) {
-      return res.status(404).json({ message: "Food not found" });
-    }
+    // Fetch the food data using the common function
+    const caloriLogData = await fetchFoodData(foodName);
 
-    const foodId = foods[0].food_id; // Get the first food's ID
+    // Step 4: Save to MongoDB
+    const newCaloriLog = new CaloriLog(caloriLogData);
+    const savedCaloriLog = await newCaloriLog.save();
 
-    // Step 2: Get detailed food information
-    const detailResponse = await axios.get(
-      `https://platform.fatsecret.com/rest/server.api`,
-      {
-        params: {
-          method: "food.get.v2",
-          food_id: foodId,
-          format: "json",
-        },
-        headers: {
-          Authorization: `Bearer ${token}`,
-        },
-      }
-    );
+    // Step 5: Send response
+    res.status(201).json(savedCaloriLog);
+  } catch (error) {
+    res.status(500).json({ message: "Server error", error });
+  }
+};
 
-    const foodDetails = detailResponse.data.food;
-    const firstServing = foodDetails.servings.serving[0]; // Get first serving
+exports.createCabbage = async (req, res) => {
+  try {
+    const foodName = "Cabbage"; // Static for apple, can change as needed
 
-    if (!firstServing) {
-      return res.status(404).json({ message: "No serving information found" });
-    }
+    // Fetch the food data using the common function
+    const caloriLogData = await fetchFoodData(foodName);
 
-    // Step 3: Extract required nutritional data
-    const caloriLogData = {
-      foodName: foodDetails.food_name,
-      calories: Number(firstServing.calories) || 0,
-      macronutrients: {
-        protein: Number(firstServing.protein) || 0,
-        carbohydrates: Number(firstServing.carbohydrate) || 0,
-        fats: Number(firstServing.fat) || 0,
-        fiber: Number(firstServing.fiber) || 0,
-        sugar: Number(firstServing.sugar) || 0,
-        sodium: Number(firstServing.sodium) || 0,
-        cholesterol: Number(firstServing.cholesterol) || 0,
-      },
-      vitamins: {
-        vitaminA: Number(firstServing.vitamin_a) || 0,
-        vitaminB: 0, // FatSecret API doesn't provide B vitamins explicitly
-        vitaminC: Number(firstServing.vitamin_c) || 0,
-        vitaminD: 0, // Not provided
-        vitaminE: 0, // Not provided
-        vitaminK: 0, // Not provided
-      },
-      minerals: {
-        calcium: Number(firstServing.calcium) || 0,
-        iron: Number(firstServing.iron) || 0,
-        magnesium: 0, // Not provided
-        potassium: Number(firstServing.potassium) || 0,
-        zinc: 0, // Not provided
-      },
-    };
+    // Step 4: Save to MongoDB
+    const newCaloriLog = new CaloriLog(caloriLogData);
+    const savedCaloriLog = await newCaloriLog.save();
+
+    // Step 5: Send response
+    res.status(201).json(savedCaloriLog);
+  } catch (error) {
+    res.status(500).json({ message: "Server error", error });
+  }
+};
+
+exports.createChicken = async (req, res) => {
+  try {
+    const foodName = "Chicken"; // Static for apple, can change as needed
+
+    // Fetch the food data using the common function
+    const caloriLogData = await fetchFoodData(foodName);
+
+    // Step 4: Save to MongoDB
+    const newCaloriLog = new CaloriLog(caloriLogData);
+    const savedCaloriLog = await newCaloriLog.save();
+
+    // Step 5: Send response
+    res.status(201).json(savedCaloriLog);
+  } catch (error) {
+    res.status(500).json({ message: "Server error", error });
+  }
+};
+exports.createBanana = async (req, res) => {
+  try {
+    const foodName = "Banana"; // Static for apple, can change as needed
+
+    // Fetch the food data using the common function
+    const caloriLogData = await fetchFoodData(foodName);
+
+    // Step 4: Save to MongoDB
+    const newCaloriLog = new CaloriLog(caloriLogData);
+    const savedCaloriLog = await newCaloriLog.save();
+
+    // Step 5: Send response
+    res.status(201).json(savedCaloriLog);
+  } catch (error) {
+    res.status(500).json({ message: "Server error", error });
+  }
+};
+exports.createOrange = async (req, res) => {
+  try {
+    const foodName = "Orange"; // Static for apple, can change as needed
+
+    // Fetch the food data using the common function
+    const caloriLogData = await fetchFoodData(foodName);
+
+    // Step 4: Save to MongoDB
+    const newCaloriLog = new CaloriLog(caloriLogData);
+    const savedCaloriLog = await newCaloriLog.save();
+
+    // Step 5: Send response
+    res.status(201).json(savedCaloriLog);
+  } catch (error) {
+    res.status(500).json({ message: "Server error", error });
+  }
+};
+exports.createCoffee = async (req, res) => {
+  try {
+    const foodName = "Coffee"; // Static for apple, can change as needed
+
+    // Fetch the food data using the common function
+    const caloriLogData = await fetchFoodData(foodName);
 
     // Step 4: Save to MongoDB
     const newCaloriLog = new CaloriLog(caloriLogData);
