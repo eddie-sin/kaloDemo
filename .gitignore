@@ -1,0 +1,38 @@
+# Node.js dependencies
+node_modules/
+
+# Environment files
+*.env
+config.env
+
+# Logs
+npm-debug.log
+yarn-debug.log
+yarn-error.log
+*.log
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE/Editor files
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# Build directories
+dist/
+build/
+
+# Temporary files
+*.bak
+*.swp
+*.tmp
+*.pid
+
+# Coverage directory for test reports
+coverage/
+
+# Dependency directories
+jspm_packages/
